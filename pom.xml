@@ -54,6 +54,13 @@
             <artifactId>lombok</artifactId>
         </dependency>
 
+        <!-- H2 for test execution -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Spring Boot DevTools -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

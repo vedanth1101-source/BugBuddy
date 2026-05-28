@@ -13,7 +13,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
+import org.springframework.web.bind.annotation.CrossOrigin;
 import java.util.List;
 
 /**
@@ -29,9 +29,9 @@ import java.util.List;
  * Input validation is enforced by @Valid; errors are handled by
  * {@link com.bugbuddy.exception.GlobalExceptionHandler}.
  */
+@CrossOrigin(origins = "*")
 @RestController
-@CrossOrigin(origins = "https://bugbuddy-web.vercel.app") // <-- ADD THIS LINE
-@RequestMapping("/api/bugs")
+@RequestMapping("/api")
 @RequiredArgsConstructor
 @Slf4j
 public class BugController {

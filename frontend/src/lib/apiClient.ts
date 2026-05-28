@@ -13,7 +13,7 @@ import { mockAnalyze, mockPaginate } from "./mockData";
  * the real Spring Boot responses take over without any code change.
  */
 
-export const API_BASE_URL = "http://localhost:8080";
+export const API_BASE_URL = "http://bugbuddy-production-b2f5.up.railway.app";
 
 export class ServiceUnavailableError extends Error {
   constructor(message = "AI Triage Service temporarily unavailable") {

@@ -30,7 +30,8 @@ import java.util.List;
  * {@link com.bugbuddy.exception.GlobalExceptionHandler}.
  */
 @RestController
-@RequestMapping("/api")
+@CrossOrigin(origins = "https://bugbuddy-web.vercel.app") // <-- ADD THIS LINE
+@RequestMapping("/api/bugs")
 @RequiredArgsConstructor
 @Slf4j
 public class BugController {

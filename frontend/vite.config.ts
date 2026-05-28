@@ -12,14 +12,12 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
-  // Enable Nitro with the vercel preset so that `vite build` produces
-  // a Vercel Build Output API v3 structure in .vercel/output/.
-  //
-  // Routing strategy applied by Nitro's vercel preset:
-  //   .vercel/output/static/         ← client assets (JS, CSS, images)
-  //   .vercel/output/functions/      ← serverless function wrapping src/server.ts
-  //   .vercel/output/config.json     ← route rules written by Nitro automatically
   nitro: {
     preset: "vercel",
+    output: {
+      dir: ".vercel/output",
+      serverDir: ".vercel/output/functions/__server.func",
+      publicDir: ".vercel/output/static",
+    },
   },
 });

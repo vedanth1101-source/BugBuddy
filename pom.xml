@@ -19,7 +19,7 @@
     <description>AI-powered error explainer and bug history tracker</description>
 
     <properties>
-        <java.version>25</java.version>
+        <java.version>23</java.version>
     </properties>
 
     <dependencies>
@@ -56,11 +56,11 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- H2 for test execution -->
+        <!-- H2 for runtime and test execution -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <scope>test</scope>
+            <scope>runtime</scope>
         </dependency>
 
         <!-- Spring Boot DevTools -->

@@ -1,31 +1,52 @@
 package com.bugbuddy.service;
 
 import com.bugbuddy.dto.BugRequest;
+import com.bugbuddy.dto.gemini.AiAnalysisResult;
+import com.bugbuddy.dto.gemini.GeminiRequest;
+import com.bugbuddy.dto.gemini.GeminiResponse;
 import com.bugbuddy.entity.Bug;
+import com.bugbuddy.exception.AiServiceException;
 import com.bugbuddy.exception.ResourceNotFoundException;
 import com.bugbuddy.repository.BugRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
 
 /**
  * Business logic layer for the BugBuddy application.
  *
- * ─── AI Stub Strategy ────────────────────────────────────────────────────────
- * The AI integration is intentionally stubbed in Phase 1.
- * When a bug is submitted:
- *   1. Perform an exact-match DB lookup by errorText.
- *   2. If found  → set isCached = true and return the existing record.
- *   3. If absent → build a new Bug entity with stub AI text, persist, and return.
+ * ─── AI Integration Flow ──────────────────────────────────────────────────────
+ *  1. CACHE CHECK  — Exact-match lookup by errorText in MySQL.
+ *                    Hit  → mark isCached=true, persist, return immediately.
+ *                    Miss → proceed to Gemini.
  *
- * In Phase 2, replace the stub constants with a real AI client call
- * (e.g., Google Gemini, OpenAI GPT) inside the buildNewBug() method.
+ *  2. AI CALL      — Structured POST to the Gemini generateContent endpoint.
+ *                    URL built as: geminiApiUrl + "?key=" + geminiApiKey
+ *                    Both values are injected via @Value from application.properties.
+ *                    No credentials are hardcoded in source.
+ *
+ *  3. PARSE        — Raw text extracted from candidates[0].content.parts[0].text,
+ *                    stripped of optional markdown fences, deserialized into
+ *                    AiAnalysisResult { explanation, suggestedFix }.
+ *
+ *  4. PERSIST      — New Bug entity built from parsed fields, saved (isCached=false).
+ *
+ *  5. ERROR GUARD  — Network errors, HTTP 4xx/5xx, and JSON parse failures are
+ *                    all caught and rethrown as AiServiceException → HTTP 503.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 @Service
@@ -34,30 +55,53 @@ import java.util.List;
 @Transactional(readOnly = true)
 public class BugService {
 
-    // ── Stub AI response constants (replace with real AI call in Phase 2) ───
-    private static final String STUB_AI_EXPLANATION =
-            "STUB: AI explanation goes here. In Phase 2 this will be replaced " +
-            "with a real AI-generated explanation of the error.";
+    // ── Injected Spring beans ────────────────────────────────────────────────
+    private final BugRepository bugRepository;
+    private final RestTemplate  restTemplate;   // configured in AppConfig (5s/30s timeouts)
+    private final ObjectMapper  objectMapper;   // Spring Boot auto-configures this bean
 
-    private static final String STUB_SUGGESTED_FIX =
-            "STUB: Suggested fix goes here. In Phase 2 this will be replaced " +
-            "with a real AI-generated code fix or remediation steps.";
+    // ── Gemini credentials — injected from application.properties ────────────
+    // These are NEVER hardcoded. The @Value annotation reads them at startup.
+    // gemini.api.url  = https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent
+    // gemini.api.key  = <your key>
+    @Value("${gemini.api.url}")
+    private String geminiApiUrl;
 
-    // ── Default language fallback ────────────────────────────────────────────
+    @Value("${gemini.api.key}")
+    private String geminiApiKey;
+
+    // ── Constants ────────────────────────────────────────────────────────────
     private static final String DEFAULT_LANGUAGE = "Java";
 
-    private final BugRepository bugRepository;
+    /**
+     * Structured prompt template that instructs Gemini to return a clean JSON
+     * object with exactly two fields: "explanation" and "suggestedFix".
+     * %s[0] = errorText, %s[1] = language.
+     */
+    private static final String PROMPT_TEMPLATE =
+            "You are a principal software engineer. Analyze the following runtime crash or error trace. " +
+            "Provide a clear, plain-English explanation of exactly why it happened in 3-4 sentences. " +
+            "Then, provide a concrete, step-by-step code fix or mitigation strategy.\n\n" +
+            "Error Log: %s\n" +
+            "Programming Language Context: %s\n\n" +
+            "CRITICAL: You must return your response inside a clean, unquoted, valid JSON object " +
+            "matching this exact structural blueprint:\n" +
+            "{\n" +
+            "  \"explanation\": \"your explanation text here\",\n" +
+            "  \"suggestedFix\": \"your code fix details here\"\n" +
+            "}";
 
     // ─────────────────────────────────────────────────────────────────────────
     // ANALYZE — POST /api/bugs/analyze
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Accepts an error submission, checks for an existing record (cache hit),
-     * and either returns the cached result or creates a new one with stub AI text.
+     * Accepts an error submission, performs a MySQL cache check, and either
+     * returns a cached result or calls Gemini to generate a fresh analysis.
      *
-     * @param request validated DTO containing errorText and optional language
-     * @return the persisted (or fetched) Bug entity
+     * @param request validated DTO (errorText required, language optional)
+     * @return persisted Bug entity; isCached=true on hit, false on miss
+     * @throws AiServiceException if the Gemini call fails for any reason
      */
     @Transactional
     public Bug analyzeBug(BugRequest request) {
@@ -67,19 +111,22 @@ public class BugService {
         log.info("Analyzing bug | language={} | errorText preview='{}'",
                 language, preview(errorText));
 
-        // ── Cache check: exact match by errorText ────────────────────────────
+        // ── Step 1: Cache check ──────────────────────────────────────────────
         return bugRepository.findByErrorText(errorText)
                 .map(existingBug -> {
                     log.info("Cache HIT — returning existing Bug id={}", existingBug.getId());
                     existingBug.setIsCached(true);
-                    // Persist the isCached flag update
                     return bugRepository.save(existingBug);
                 })
                 .orElseGet(() -> {
-                    log.info("Cache MISS — creating new Bug record with stub AI data");
-                    Bug newBug = buildNewBug(errorText, language);
-                    Bug saved = bugRepository.save(newBug);
-                    log.info("Saved new Bug id={}", saved.getId());
+                    // ── Step 2: Cache miss → call Gemini ────────────────────
+                    log.info("Cache MISS — invoking Gemini AI for fresh analysis");
+                    AiAnalysisResult aiResult = callGeminiApi(errorText, language);
+
+                    // ── Step 3: Persist and return ───────────────────────────
+                    Bug newBug = buildBugFromAiResult(errorText, language, aiResult);
+                    Bug saved  = bugRepository.save(newBug);
+                    log.info("Saved new Bug id={} from AI analysis", saved.getId());
                     return saved;
                 });
     }
@@ -89,10 +136,7 @@ public class BugService {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Returns a paginated view of all Bug records.
-     *
-     * @param pageable Spring Data pageable (page index + page size + optional sort)
-     * @return Page<Bug> — includes content list, total count, page metadata
+     * Returns a paginated view of all Bug records, ordered newest-first.
      */
     public Page<Bug> getAllBugs(Pageable pageable) {
         log.debug("Fetching all bugs | page={} size={}",
@@ -105,11 +149,8 @@ public class BugService {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Delegates to the native FULLTEXT MySQL query in the repository.
-     * Results are ordered by relevance score descending.
-     *
-     * @param keyword the search term
-     * @return list of matching Bug records
+     * Delegates to the native FULLTEXT MySQL query in BugRepository.
+     * Results are ordered by MySQL relevance score descending.
      */
     public List<Bug> searchBugs(String keyword) {
         log.debug("Full-text search | keyword='{}'", keyword);
@@ -121,11 +162,9 @@ public class BugService {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Fetches a single Bug by its primary key.
+     * Fetches a single Bug by primary key.
      *
-     * @param id the Bug's primary key
-     * @return the Bug entity
-     * @throws ResourceNotFoundException if no Bug with the given id exists
+     * @throws ResourceNotFoundException → HTTP 404 if no matching record exists
      */
     public Bug getBugById(Long id) {
         log.debug("Fetching Bug by id={}", id);
@@ -134,36 +173,185 @@ public class BugService {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Private helpers
+    // Private — Gemini API integration
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Builds a new Bug entity populated with stub AI text.
-     * Replace the stub constants here in Phase 2 with a real AI client call.
+     * Constructs and dispatches the HTTP POST request to the Gemini
+     * generateContent endpoint, then parses the structured JSON response.
      *
-     * @param errorText sanitized error text
-     * @param language  resolved programming language
-     * @return unsaved Bug entity ready for persistence
+     * URL construction:
+     *   String targetUrl = geminiApiUrl + "?key=" + geminiApiKey;
+     *
+     * geminiApiUrl is injected from application.properties:
+     *   gemini.api.url = https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent
+     *
+     * The full path — including /v1beta/ and /models/gemini-1.5-flash — lives
+     * entirely inside application.properties. No path segment is hardcoded here.
+     * The API key is appended as a query parameter per Gemini REST API convention.
+     *
+     * @param errorText raw error text to analyze
+     * @param language  programming language context
+     * @return parsed {@link AiAnalysisResult} with explanation and suggestedFix
+     * @throws AiServiceException on any network, HTTP, or parse failure
      */
-    private Bug buildNewBug(String errorText, String language) {
+    private AiAnalysisResult callGeminiApi(String errorText, String language) {
+
+        // ── 1. Build the prompt and request body ─────────────────────────────
+        String prompt = String.format(PROMPT_TEMPLATE, errorText, language);
+        GeminiRequest requestBody = GeminiRequest.of(prompt);
+
+        // ── 2. Construct the target URL from injected properties only ─────────
+        //       No path segment is hardcoded here. The full model path
+        //       (.../v1beta/models/gemini-1.5-flash:generateContent) comes
+        //       entirely from the gemini.api.url property value.
+        String targetUrl = geminiApiUrl + "?key=" + geminiApiKey;
+
+        // ── 3. Set request headers ───────────────────────────────────────────
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+
+        HttpEntity<GeminiRequest> httpEntity = new HttpEntity<>(requestBody, headers);
+
+        try {
+            // URL logged without key for security
+            log.debug("POST → Gemini | url={}", geminiApiUrl);
+
+            // ── 4. Dispatch via the timeout-configured RestTemplate bean ──────
+            ResponseEntity<GeminiResponse> response = restTemplate.postForEntity(
+                    targetUrl,
+                    httpEntity,
+                    GeminiResponse.class
+            );
+
+            // ── 5. Validate HTTP response ────────────────────────────────────
+            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+                throw new AiServiceException(
+                    "Gemini API returned a non-2xx response: " + response.getStatusCode()
+                );
+            }
+
+            // ── 6. Extract text from candidates[0].content.parts[0].text ─────
+            String rawText = response.getBody().extractText();
+            if (rawText == null || rawText.isBlank()) {
+                throw new AiServiceException(
+                    "Gemini API returned an empty content block."
+                );
+            }
+
+            log.debug("Gemini raw response received (length={})", rawText.length());
+
+            // ── 7. Parse the embedded JSON from the AI text ──────────────────
+            return parseAiJsonResponse(rawText);
+
+        } catch (ResourceAccessException ex) {
+            // Network unreachable, connection refused, connect/read timeout
+            log.error("Gemini network error: {}", ex.getMessage(), ex);
+            throw new AiServiceException(
+                "The AI service is currently unreachable. Please try again later.", ex
+            );
+        } catch (HttpClientErrorException ex) {
+            // 4xx — likely invalid API key (401/403) or malformed request (400)
+            log.error("Gemini client error [{}]: {}", ex.getStatusCode(), ex.getResponseBodyAsString(), ex);
+            throw new AiServiceException(
+                "The AI service rejected the request (HTTP " + ex.getStatusCode() +
+                "). Verify the API key and model name in application.properties.", ex
+            );
+        } catch (HttpServerErrorException ex) {
+            // 5xx — Gemini-side failure
+            log.error("Gemini server error [{}]: {}", ex.getStatusCode(), ex.getResponseBodyAsString(), ex);
+            throw new AiServiceException(
+                "The AI service encountered an internal error (HTTP " + ex.getStatusCode() +
+                "). Please try again later.", ex
+            );
+        } catch (AiServiceException ex) {
+            throw ex; // already wrapped — do not double-wrap
+        } catch (Exception ex) {
+            log.error("Unexpected error during Gemini call: {}", ex.getMessage(), ex);
+            throw new AiServiceException(
+                "An unexpected error occurred while contacting the AI service.", ex
+            );
+        }
+    }
+
+    /**
+     * Parses the raw text from Gemini into a typed {@link AiAnalysisResult}.
+     *
+     * Gemini occasionally wraps its JSON in markdown fences (```json ... ```).
+     * This method strips those before Jackson deserialization to ensure robust
+     * parsing regardless of Gemini's output formatting.
+     *
+     * @param rawText the text string extracted from the Gemini response envelope
+     * @return populated AiAnalysisResult
+     * @throws AiServiceException if the text is not valid JSON or fields are missing
+     */
+    private AiAnalysisResult parseAiJsonResponse(String rawText) {
+        String cleaned = rawText.trim();
+
+        // Strip markdown code fences: ```json ... ``` or ``` ... ```
+        if (cleaned.startsWith("```")) {
+            cleaned = cleaned.replaceFirst("^```(?:json)?\\s*", "");
+            int lastFence = cleaned.lastIndexOf("```");
+            if (lastFence != -1) {
+                cleaned = cleaned.substring(0, lastFence).trim();
+            }
+        }
+
+        try {
+            AiAnalysisResult result = objectMapper.readValue(cleaned, AiAnalysisResult.class);
+
+            // Validate both required fields are present and non-empty
+            if (!StringUtils.hasText(result.getExplanation())) {
+                throw new AiServiceException(
+                    "Gemini response was missing the 'explanation' field."
+                );
+            }
+            if (!StringUtils.hasText(result.getSuggestedFix())) {
+                throw new AiServiceException(
+                    "Gemini response was missing the 'suggestedFix' field."
+                );
+            }
+
+            return result;
+
+        } catch (JsonProcessingException ex) {
+            log.error("JSON parse failure. Cleaned Gemini text: {}", cleaned, ex);
+            throw new AiServiceException(
+                "The AI service returned a response in an unexpected format. Please try again.", ex
+            );
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Private — entity builder and utility helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Builds a new Bug entity from a parsed AI result.
+     * Maps AiAnalysisResult.explanation → Bug.aiExplanation
+     *      AiAnalysisResult.suggestedFix → Bug.suggestedFix
+     */
+    private Bug buildBugFromAiResult(String errorText, String language, AiAnalysisResult aiResult) {
         return Bug.builder()
                 .errorText(errorText)
                 .language(language)
-                .aiExplanation(STUB_AI_EXPLANATION)
-                .suggestedFix(STUB_SUGGESTED_FIX)
+                .aiExplanation(aiResult.getExplanation())
+                .suggestedFix(aiResult.getSuggestedFix())
                 .isCached(false)
                 .build();
     }
 
     /**
-     * Resolves the language from the request, defaulting to "Java" if absent or blank.
+     * Resolves the programming language, defaulting to "Java" if blank or absent.
      */
     private String resolveLanguage(String language) {
         return StringUtils.hasText(language) ? language.trim() : DEFAULT_LANGUAGE;
     }
 
     /**
-     * Returns a safe preview of a long string for log output.
+     * Returns a safe 80-char preview of a string for log lines.
+     * Prevents multi-line stack traces from flooding log output.
      */
     private String preview(String text) {
         return text.length() > 80 ? text.substring(0, 80) + "…" : text;

@@ -7,16 +7,6 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
  * Global CORS configuration for the BugBuddy REST API.
- *
- * Allows cross-origin requests from:
- *  - http://localhost:3000  (Create React App / typical React dev server)
- *  - http://localhost:5173  (Vite dev server)
- *
- * Covers all endpoints under /api/** and permits the HTTP methods
- * used by the BugController. Credentials (cookies, auth headers) are
- * also enabled so that session-based auth can be added in a future phase.
- *
- * NOTE: In production, restrict allowedOrigins to your actual frontend domain.
  */
 @Configuration
 public class WebConfig {
@@ -27,10 +17,11 @@ public class WebConfig {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
                 registry.addMapping("/api/**")
-                        // ── Allowed frontend origins ────────────────────────
+                        // ── Allowed frontend origins (UPDATED FOR VERCEL) ──
                         .allowedOrigins(
-                                "http://localhost:3000",   // CRA / generic React
-                                "http://localhost:5173"    // Vite
+                                "https://bugbuddy-web.vercel.app", // Your live Vercel app
+                                "http://localhost:3000",           // CRA dev server
+                                "http://localhost:5173"            // Vite dev server
                         )
                         // ── Allowed HTTP methods ────────────────────────────
                         .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")

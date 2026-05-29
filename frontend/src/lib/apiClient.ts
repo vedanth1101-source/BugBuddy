@@ -13,7 +13,7 @@ import { mockAnalyze, mockPaginate } from "./mockData";
  * the real Spring Boot responses take over without any code change.
  */
 
-export const API_BASE_URL = "http://bugbuddy-production-b2f5.up.railway.app";
+export const API_BASE_URL = "https://bugbuddy-production-b2f5.up.railway.app";
 
 export class ServiceUnavailableError extends Error {
   constructor(message = "AI Triage Service temporarily unavailable") {
@@ -53,7 +53,7 @@ async function withTimeout<T>(p: Promise<T>, ms = 3500): Promise<T> {
 
 async function safeFetch(input: string, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3500);
+  const timer = setTimeout(() => controller.abort(), 30000);
   try {
     return await fetch(input, { ...init, signal: controller.signal });
   } finally {
@@ -80,12 +80,9 @@ export async function analyzeBug(req: AnalyzeRequest): Promise<BugAnalysis> {
     return (await res.json()) as BugAnalysis;
   } catch (err) {
     if (err instanceof ServiceUnavailableError) throw err;
-    if (isNetworkUnreachable(err)) {
-      // Simulate latency for a realistic UX inside the preview.
-      await new Promise((r) => setTimeout(r, 650));
-      return mockAnalyze(req);
-    }
-    throw err;
+      console.error("REAL API ERROR:", err);
+      throw err;
+
   }
 }
 

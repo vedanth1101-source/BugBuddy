@@ -59,7 +59,7 @@ function AnalysePage() {
 
         <AnalyzeForm
           isPending={mutation.isPending}
-          onSubmit={(req) => mutation.mutate(req)}
+          onSubmit={(req) => mutation.mutateAsync(req)}
         />
 
         {mutation.isSuccess && mutation.data && <ResultsCard result={mutation.data} />}

@@ -3,23 +3,58 @@ import { Spinner } from "@/components/Spinner";
 import { LANGUAGES } from "@/lib/mockData";
 import type { AnalyzeRequest, SupportedLanguage } from "@/lib/types";
 
+/** Maximum characters accepted before client-side abort. Protects backend quota. */
+const MAX_ERROR_TEXT_LENGTH = 5_000;
+
 interface AnalyzeFormProps {
   isPending: boolean;
-  onSubmit: (req: AnalyzeRequest) => void;
+  /** Must return a Promise so the try/finally block can await network completion. */
+  onSubmit: (req: AnalyzeRequest) => Promise<void> | void;
 }
 
 export function AnalyzeForm({ isPending, onSubmit }: AnalyzeFormProps) {
   const [language, setLanguage] = useState<SupportedLanguage>("Java");
   const [errorText, setErrorText] = useState("");
 
-  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
+  // ── Local analyzing flag — fires instantly on click, before the network
+  //    round-trip begins. Guarantees the button is disabled and shows the
+  //    spinner even during the synchronous gap before useMutation's isPending
+  //    becomes true. Reset unconditionally in the finally block.
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+
+    // ── Guard 1: Duplicate-call prevention — instant early return if already in flight.
+    if (isAnalyzing) return;
+
     const trimmed = errorText.trim();
-    if (!trimmed || isPending) return;
-    onSubmit({ errorText: trimmed, language });
+    if (!trimmed) return;
+
+    // ── Guard 2: Client-side payload defence — abort before the network call
+    //    if the input exceeds the allowed length. Protects backend AI quota.
+    if (trimmed.length > MAX_ERROR_TEXT_LENGTH) {
+      alert(
+        `Your error text is ${trimmed.length.toLocaleString()} characters. ` +
+          `Please trim it to ${MAX_ERROR_TEXT_LENGTH.toLocaleString()} characters or fewer before submitting.`
+      );
+      return;
+    }
+
+    // ── Disable button immediately, before any async work starts.
+    setIsAnalyzing(true);
+
+    try {
+      await onSubmit({ errorText: trimmed, language });
+    } finally {
+      // ── Unconditional reset: re-enables the button even if the network
+      //    call throws, times out, or the component is in an error state.
+      setIsAnalyzing(false);
+    }
   };
 
-  const disabled = isPending;
+  // Combine local flag with parent mutation state for full coverage.
+  const disabled = isAnalyzing || isPending;
 
   return (
     <form
@@ -66,12 +101,25 @@ export function AnalyzeForm({ isPending, onSubmit }: AnalyzeFormProps) {
         </div>
 
         <div className="sm:col-span-2">
-          <label
-            htmlFor="errorText"
-            className="block text-sm font-medium text-slate-700 dark:text-slate-200"
-          >
-            Error / stack trace
-          </label>
+          <div className="flex items-baseline justify-between">
+            <label
+              htmlFor="errorText"
+              className="block text-sm font-medium text-slate-700 dark:text-slate-200"
+            >
+              Error / stack trace
+            </label>
+            {/* Live character counter — turns red when approaching the limit */}
+            <span
+              className={`text-xs tabular-nums ${
+                errorText.length > MAX_ERROR_TEXT_LENGTH
+                  ? "font-semibold text-red-500"
+                  : "text-slate-400"
+              }`}
+              aria-live="polite"
+            >
+              {errorText.length.toLocaleString()} / {MAX_ERROR_TEXT_LENGTH.toLocaleString()}
+            </span>
+          </div>
           <textarea
             id="errorText"
             name="errorText"
@@ -92,7 +140,7 @@ export function AnalyzeForm({ isPending, onSubmit }: AnalyzeFormProps) {
           disabled={disabled || errorText.trim().length === 0}
           className="inline-flex min-w-[12rem] items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-200 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-white disabled:cursor-not-allowed disabled:bg-blue-600/60 dark:focus:ring-offset-slate-900"
         >
-          {isPending ? (
+          {isAnalyzing || isPending ? (
             <>
               <Spinner className="h-4 w-4" label="Analysing" />
               <span>Analysing…</span>

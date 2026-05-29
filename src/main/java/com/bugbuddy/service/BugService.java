@@ -6,7 +6,9 @@ import com.bugbuddy.dto.gemini.GeminiRequest;
 import com.bugbuddy.dto.gemini.GeminiResponse;
 import com.bugbuddy.entity.Bug;
 import com.bugbuddy.exception.AiServiceException;
+import com.bugbuddy.exception.PayloadTooLargeException;
 import com.bugbuddy.exception.ResourceNotFoundException;
+import com.bugbuddy.exception.ServiceUnavailableException;
 import com.bugbuddy.repository.BugRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -71,7 +73,14 @@ public class BugService {
     private String geminiApiKey;
 
     // ── Constants ────────────────────────────────────────────────────────────
-    private static final String DEFAULT_LANGUAGE = "Java";
+    private static final String DEFAULT_LANGUAGE     = "Java";
+
+    /**
+     * Maximum characters accepted in the errorText payload.
+     * This guard fires BEFORE any cache lookup or network call to prevent
+     * oversized inputs from consuming Gemini AI token quota.
+     */
+    private static final int MAX_ERROR_TEXT_LENGTH = 5_000;
 
     /**
      * Structured prompt template that instructs Gemini to return a clean JSON
@@ -107,6 +116,17 @@ public class BugService {
     public Bug analyzeBug(BugRequest request) {
         String errorText = request.getErrorText().trim();
         String language  = resolveLanguage(request.getLanguage());
+
+        // ── Step 0: Payload size guard ───────────────────────────────────────
+        // Enforce BEFORE cache check and BEFORE any network call.
+        // Protects Gemini token quota and prevents slow/expensive processing.
+        if (errorText.length() > MAX_ERROR_TEXT_LENGTH) {
+            log.warn("Payload rejected — errorText length={} exceeds limit={}",
+                    errorText.length(), MAX_ERROR_TEXT_LENGTH);
+            throw new PayloadTooLargeException(
+                    "Error text too long. Please trim your stack trace."
+            );
+        }
 
         log.info("Analyzing bug | language={} | errorText preview='{}'",
                 language, preview(errorText));
@@ -246,13 +266,23 @@ public class BugService {
             return parseAiJsonResponse(rawText);
 
         } catch (ResourceAccessException ex) {
-            // Network unreachable, connection refused, connect/read timeout
-            log.error("Gemini network error: {}", ex.getMessage(), ex);
-            throw new AiServiceException(
-                "The AI service is currently unreachable. Please try again later.", ex
+            // Network unreachable, connection refused, OR read timeout exceeded (10s SLA).
+            // All three cases mean the AI service is not available to serve this request.
+            log.error("Gemini unreachable / timeout: {}", ex.getMessage(), ex);
+            throw new ServiceUnavailableException(
+                "AI service unavailable. Please try again.", ex
             );
         } catch (HttpClientErrorException ex) {
-            // 4xx — likely invalid API key (401/403) or malformed request (400)
+            // 401 / 403 — invalid or expired API key → service operationally unavailable.
+            // Any other 4xx (e.g. 400 bad request) is a request-level problem, not
+            // an availability problem, so it remains AiServiceException.
+            int status = ex.getStatusCode().value();
+            if (status == 401 || status == 403) {
+                log.error("Gemini auth error [{}] — check API key in application.properties", status, ex);
+                throw new ServiceUnavailableException(
+                    "AI service unavailable. Please try again.", ex
+                );
+            }
             log.error("Gemini client error [{}]: {}", ex.getStatusCode(), ex.getResponseBodyAsString(), ex);
             throw new AiServiceException(
                 "The AI service rejected the request (HTTP " + ex.getStatusCode() +
@@ -265,7 +295,7 @@ public class BugService {
                 "The AI service encountered an internal error (HTTP " + ex.getStatusCode() +
                 "). Please try again later.", ex
             );
-        } catch (AiServiceException ex) {
+        } catch (AiServiceException | ServiceUnavailableException ex) {
             throw ex; // already wrapped — do not double-wrap
         } catch (Exception ex) {
             log.error("Unexpected error during Gemini call: {}", ex.getMessage(), ex);

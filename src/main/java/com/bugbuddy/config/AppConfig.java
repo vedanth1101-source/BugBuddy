@@ -16,8 +16,9 @@ import java.time.Duration;
  *
  * Timeout policy:
  *  - Connection timeout : 5 seconds  — fail fast if the remote host is unreachable
- *  - Read timeout       : 30 seconds — Gemini AI generation can take several seconds
- *    under load; 30s is a safe upper bound before we raise an AiServiceException.
+ *  - Read timeout       : 10 seconds — strict SLA ceiling for Gemini AI responses.
+ *    Exceeding this threshold throws ResourceAccessException, which BugService
+ *    catches and maps to ServiceUnavailableException → HTTP 503.
  */
 @Configuration
 public class AppConfig {
@@ -39,7 +40,7 @@ public class AppConfig {
     public RestTemplate restTemplate(RestTemplateBuilder builder) {
         return builder
                 .setConnectTimeout(Duration.ofSeconds(5))
-                .setReadTimeout(Duration.ofSeconds(30))
+                .setReadTimeout(Duration.ofSeconds(10))   // strict 10-second SLA
                 .build();
     }
 }

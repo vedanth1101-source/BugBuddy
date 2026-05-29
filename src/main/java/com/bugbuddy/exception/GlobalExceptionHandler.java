@@ -1,6 +1,9 @@
 package com.bugbuddy.exception;
 
 import com.bugbuddy.dto.ErrorResponse;
+import com.bugbuddy.exception.AiServiceException;
+import com.bugbuddy.exception.PayloadTooLargeException;
+import com.bugbuddy.exception.ServiceUnavailableException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
@@ -24,7 +27,10 @@ import java.util.stream.Collectors;
  *
  * Handled cases:
  *  - MethodArgumentNotValidException  → 400 (Bean Validation failures)
+ *  - PayloadTooLargeException         → 400 (errorText exceeds 5,000 chars)
  *  - ResourceNotFoundException        → 404 (entity not found)
+ *  - ServiceUnavailableException      → 503 (Gemini timeout or auth failure)
+ *  - AiServiceException               → 503 (general Gemini call failures)
  *  - DataAccessException              → 503 (MySQL / JPA layer errors)
  *  - Exception (catch-all)            → 500 (unexpected errors)
  */
@@ -66,6 +72,28 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
     }
 
+    // ───────────────────────────────────────────────────────────────────────
+    // 400 — Payload too large (errorText exceeds 5,000 character limit)
+    // ───────────────────────────────────────────────────────────────────────
+
+    @ExceptionHandler(PayloadTooLargeException.class)
+    public ResponseEntity<ErrorResponse> handlePayloadTooLarge(
+            PayloadTooLargeException ex,
+            HttpServletRequest request) {
+
+        log.warn("Payload too large on request [{}]: {}", request.getRequestURI(), ex.getMessage());
+
+        ErrorResponse response = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error(HttpStatus.BAD_REQUEST.getReasonPhrase())
+                .message(ex.getMessage())   // "Error text too long. Please trim your stack trace."
+                .path(request.getRequestURI())
+                .build();
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 404 — Resource not found
     // ─────────────────────────────────────────────────────────────────────────
@@ -86,6 +114,50 @@ public class GlobalExceptionHandler {
                 .build();
 
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 503 — Gemini service unavailable (timeout or invalid API key)
+    // Returns the EXACT client-facing JSON payload required by the contract:
+    //   { "error": "AI service unavailable. Please try again." }
+    // ───────────────────────────────────────────────────────────────────────
+
+    @ExceptionHandler(ServiceUnavailableException.class)
+    public ResponseEntity<Map<String, String>> handleServiceUnavailable(
+            ServiceUnavailableException ex,
+            HttpServletRequest request) {
+
+        // Full cause logged internally; client receives only the safe message.
+        log.error("AI service unavailable on request [{}]: {}",
+                request.getRequestURI(), ex.getMessage(), ex);
+
+        // Returns the exact minimal JSON payload specified:
+        // { "error": "AI service unavailable. Please try again." }
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(Map.of("error", "AI service unavailable. Please try again."));
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // 503 — General AI call failure (parse errors, empty responses, 5xx from Gemini)
+    // ───────────────────────────────────────────────────────────────────────
+
+    @ExceptionHandler(AiServiceException.class)
+    public ResponseEntity<ErrorResponse> handleAiServiceError(
+            AiServiceException ex,
+            HttpServletRequest request) {
+
+        log.error("AI service error on request [{}]: {}", request.getRequestURI(), ex.getMessage(), ex);
+
+        ErrorResponse response = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.SERVICE_UNAVAILABLE.value())
+                .error(HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase())
+                .message("AI Triage Service temporarily unavailable. Please try again later.")
+                .path(request.getRequestURI())
+                .build();
+
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -29,7 +29,7 @@ import java.util.List;
  * Input validation is enforced by @Valid; errors are handled by
  * {@link com.bugbuddy.exception.GlobalExceptionHandler}.
  */
-@CrossOrigin(origins = "*")
+
 @RestController
 @RequestMapping("/api")
 @RequiredArgsConstructor

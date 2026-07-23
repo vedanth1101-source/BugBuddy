@@ -1,19 +1,20 @@
 import type { AnalyzeRequest, BugAnalysis, PaginatedBugs } from "./types";
-import { mockAnalyze, mockPaginate } from "./mockData";
 
 /**
  * Centralized API client for the BugBuddy Spring Boot backend.
  *
- * Base URL is locked to the local development server. When this code is
- * executed inside the Lovable cloud preview, direct calls to
- * http://localhost:8080 fail (mixed-content / sandbox isolation). In that
- * case the client transparently falls back to deterministic mock data
- * generated from the canonical Reference Data Schema so the UI remains
- * fully reviewable. As soon as the project is exported and run locally,
- * the real Spring Boot responses take over without any code change.
+ * This client never fabricates data. If the backend is unreachable, every
+ * call surfaces ServiceUnavailableError so the UI can say so plainly.
+ *
+ * (It previously fell back to a generated mock dataset when the network was
+ * unreachable — a workaround for a sandboxed preview environment. Once
+ * deployed publicly that behaviour made a dead backend look like a live one,
+ * rendering invented "audit history" rows as though they were real triages.)
  */
 
-export const API_BASE_URL = "https://bugbuddy-production-b2f5.up.railway.app";
+export const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ??
+  "https://bugbuddy-production-b2f5.up.railway.app";
 
 export class ServiceUnavailableError extends Error {
   constructor(message = "AI Triage Service temporarily unavailable") {
@@ -80,9 +81,11 @@ export async function analyzeBug(req: AnalyzeRequest): Promise<BugAnalysis> {
     return (await res.json()) as BugAnalysis;
   } catch (err) {
     if (err instanceof ServiceUnavailableError) throw err;
-      console.error("REAL API ERROR:", err);
-      throw err;
-
+    // A dead backend surfaces as a fetch TypeError ("Failed to fetch"), which
+    // the UI's error matcher does not recognise. Normalise it so the user is
+    // told the service is down instead of the request appearing to do nothing.
+    if (isNetworkUnreachable(err)) throw new ServiceUnavailableError();
+    throw err;
   }
 }
 
@@ -95,10 +98,7 @@ export async function fetchBugHistory(
     if (!res.ok) throw new Error(`History failed: HTTP ${res.status}`);
     return (await res.json()) as PaginatedBugs;
   } catch (err) {
-    if (isNetworkUnreachable(err)) {
-      await new Promise((r) => setTimeout(r, 250));
-      return mockPaginate(page, size);
-    }
+    if (isNetworkUnreachable(err)) throw new ServiceUnavailableError();
     throw err;
   }
 }
@@ -123,10 +123,7 @@ export async function searchBugs(query: string, page = 0, size = 10): Promise<Pa
     }
     return data;
   } catch (err) {
-    if (isNetworkUnreachable(err)) {
-      await new Promise((r) => setTimeout(r, 250));
-      return mockPaginate(page, size, query);
-    }
+    if (isNetworkUnreachable(err)) throw new ServiceUnavailableError();
     throw err;
   }
 }

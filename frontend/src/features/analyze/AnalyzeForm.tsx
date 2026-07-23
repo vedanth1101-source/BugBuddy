@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Spinner } from "@/components/Spinner";
-import { LANGUAGES } from "@/lib/mockData";
+import { LANGUAGES } from "@/lib/constants";
 import type { AnalyzeRequest, SupportedLanguage } from "@/lib/types";
 
 /** Maximum characters accepted before client-side abort. Protects backend quota. */

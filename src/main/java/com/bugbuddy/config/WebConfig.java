@@ -26,8 +26,8 @@ public class WebConfig {
         // ── The Aggressive Headers ────────────────────────────────
         config.setAllowedHeaders(Arrays.asList(
                 "Origin", "Content-Type", "Accept", "Authorization",
-                "X-Requested-With", "Access-Control-Request-Method", 
-                "Access-Control-Request-Headers"
+                "X-Requested-With", "Access-Control-Request-Method",
+                "Access-Control-Request-Headers", "X-API-Key"
         ));
         
         // ── The Allowed Methods ───────────────────────────────────

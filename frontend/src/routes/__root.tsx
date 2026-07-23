@@ -72,14 +72,26 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
-      { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { title: "BugBuddy — AI Error Triage" },
+      {
+        name: "description",
+        content:
+          "Paste any stack trace or runtime exception and get a plain-English explanation plus a production-ready fix, powered by Google Gemini.",
+      },
+      { name: "author", content: "BugBuddy" },
+      { property: "og:title", content: "BugBuddy — AI Error Triage" },
+      {
+        property: "og:description",
+        content:
+          "Enterprise-grade AI triage for Java, Python and JavaScript stack traces.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
-      { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:title", content: "BugBuddy — AI Error Triage" },
+      {
+        name: "twitter:description",
+        content: "AI-powered error explainer and bug history tracker.",
+      },
     ],
     links: [
       {

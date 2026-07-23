@@ -135,8 +135,20 @@ public class BugService {
         return bugRepository.findByErrorText(errorText)
                 .map(existingBug -> {
                     log.info("Cache HIT — returning existing Bug id={}", existingBug.getId());
-                    existingBug.setIsCached(true);
-                    return bugRepository.save(existingBug);
+                    // Return a transient copy with isCached=true.
+                    // We intentionally do NOT call save() here — isCached is a
+                    // per-response signal for the caller, NOT a persistent column
+                    // attribute. Mutating and saving the stored record on every
+                    // cache hit would corrupt the record's historical isCached value.
+                    return Bug.builder()
+                            .id(existingBug.getId())
+                            .errorText(existingBug.getErrorText())
+                            .language(existingBug.getLanguage())
+                            .aiExplanation(existingBug.getAiExplanation())
+                            .suggestedFix(existingBug.getSuggestedFix())
+                            .isCached(true)
+                            .createdAt(existingBug.getCreatedAt())
+                            .build();
                 })
                 .orElseGet(() -> {
                     // ── Step 2: Cache miss → call Gemini ────────────────────
@@ -190,6 +202,28 @@ public class BugService {
         log.debug("Fetching Bug by id={}", id);
         return bugRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Bug", "id", id));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // DELETE — DELETE /api/bugs/{id}
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Deletes a single Bug by primary key.
+     *
+     * Verifies existence first so that a 404 is returned for unknown IDs rather
+     * than silently returning 204 for a no-op delete.
+     *
+     * @param id the Bug's primary key
+     * @throws ResourceNotFoundException → HTTP 404 if no matching record exists
+     */
+    @Transactional
+    public void deleteBug(Long id) {
+        log.info("Deleting Bug id={}", id);
+        Bug bug = bugRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Bug", "id", id));
+        bugRepository.delete(bug);
+        log.info("Bug id={} deleted successfully", id);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

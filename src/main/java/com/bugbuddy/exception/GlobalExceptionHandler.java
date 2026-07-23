@@ -3,6 +3,8 @@ package com.bugbuddy.exception;
 import com.bugbuddy.dto.ErrorResponse;
 import com.bugbuddy.exception.AiServiceException;
 import com.bugbuddy.exception.PayloadTooLargeException;
+import com.bugbuddy.exception.RateLimitExceededException;
+import com.bugbuddy.exception.ResourceNotFoundException;
 import com.bugbuddy.exception.ServiceUnavailableException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -92,6 +94,28 @@ public class GlobalExceptionHandler {
                 .build();
 
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 429 — Rate limit exceeded (too many requests from one IP per minute)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ErrorResponse> handleRateLimitExceeded(
+            RateLimitExceededException ex,
+            HttpServletRequest request) {
+
+        log.warn("Rate limit exceeded on request [{}]: {}", request.getRequestURI(), ex.getMessage());
+
+        ErrorResponse response = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.TOO_MANY_REQUESTS.value())
+                .error("Too Many Requests")
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .build();
+
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(response);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

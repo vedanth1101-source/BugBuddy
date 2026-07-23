@@ -1,5 +1,20 @@
 target/
 .idea/
+.vscode/
 *.log
 *.class
 .DS_Store
+
+# Local / environment config — never commit credentials
+.env
+.env.local
+application-local.properties
+application-prod.properties
+src/main/resources/application-local.properties
+src/main/resources/application-prod.properties
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local

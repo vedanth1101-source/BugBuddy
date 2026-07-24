@@ -16,6 +16,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 /**
  * Optional API key authentication filter for POST /api/bugs/analyze.
@@ -68,7 +70,7 @@ public class ApiKeyAuthFilter implements Filter {
         if (isProtectedEndpoint && StringUtils.hasText(configuredApiKey)) {
             String provided = httpReq.getHeader(API_KEY_HEADER);
 
-            if (!configuredApiKey.equals(provided)) {
+            if (!constantTimeEquals(configuredApiKey, provided)) {
                 log.warn("Unauthorized access attempt to {} — invalid or missing {}",
                          PROTECTED_PATH, API_KEY_HEADER);
                 httpResp.setStatus(HttpStatus.UNAUTHORIZED.value());
@@ -83,5 +85,19 @@ public class ApiKeyAuthFilter implements Filter {
         }
 
         chain.doFilter(request, response);
+    }
+
+    /**
+     * Compares the configured key against the supplied one in time that does not
+     * depend on how many leading characters match, so the comparison cannot be
+     * used as a timing oracle to recover the key byte by byte.
+     */
+    private static boolean constantTimeEquals(String expected, String provided) {
+        if (provided == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                provided.getBytes(StandardCharsets.UTF_8));
     }
 }
